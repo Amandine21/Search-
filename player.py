@@ -40,6 +40,8 @@ class PlayerControllerMinimax(PlayerController):
         state = node.state
         fish_positions = state.get_fish_positions()
         hooks = state.get_hook_positions()
+        fish_scores = state.get_fish_scores()
+        caught_fish = state.get_caught()
 
         def torus_manhattan(a, b, width=20):
             dx = abs(a[0] - b[0])
@@ -47,18 +49,29 @@ class PlayerControllerMinimax(PlayerController):
             dy = abs(a[1] - b[1])
             return dx + dy
 
-        best_dist_max = float("inf")
-        best_dist_min = float("inf")
+        max_score = 0
+        min_score = 0
 
-        for pos in fish_positions.values():
-            d0 = torus_manhattan(hooks[0], pos)  # MAX (green)
-            d1 = torus_manhattan(hooks[1], pos)  # MIN (red)
+        for fish_id, pos in fish_positions.items():
+            fish_value = fish_scores[fish_id]
 
-            best_dist_max = min(best_dist_max, d0)
-            best_dist_min = min(best_dist_min, d1)
+            # Distance to hooks
+            d_max = torus_manhattan(hooks[0], pos) + 1
+            d_min = torus_manhattan(hooks[1], pos) + 1
 
-        # Simple evaluation: distance from MAX hook to nearest fish
-        return best_dist_min - best_dist_max
+            # If hook is on the fish, it counts as caught
+            if hooks[0] == pos:
+                max_score += fish_value  # full value
+            else:
+                max_score += fish_value / d_max  # partial value if approaching
+
+            if hooks[1] == pos:
+                min_score += fish_value
+            else:
+                min_score += fish_value / d_min
+
+        return max_score - min_score
+
 
     # ----------------- ALPHA-BETA PRUNING -----------------
     def alphabeta(self, node, depth, alpha, beta, maximizing_player, evaluate, start_time, time_limit):
