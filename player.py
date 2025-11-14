@@ -72,8 +72,29 @@ class PlayerControllerMinimax(PlayerController):
             This is basically the heuristic from task 2.1
             """
             state = node.state
-            score_max, score_min = state.get_player_scores()
-            return score_max - score_min
+            fish_positions = state.get_fish_positions()
+
+            hooks = state.get_hook_positions()
+
+            def torus_manhattan(a, b, width=20):
+                dx = abs(a[0] - b[0])
+                dx = min(dx, width - dx)   
+                dy = abs(a[1] - b[1])      
+                return dx + dy
+
+            best_dist_max = float("inf")
+            best_dist_min = float("inf")
+
+            for pos in fish_positions.values():
+                d0 = torus_manhattan(hooks[0], pos)  # MAX (green)
+                d1 = torus_manhattan(hooks[1], pos)  # MIN (red)
+
+                if d0 < best_dist_max:
+                    best_dist_max = d0
+                if d1 < best_dist_min:
+                    best_dist_min = d1
+
+            return best_dist_min - best_dist_max
 
         # ---------- HELPER: MINIMAX ----------
         def minimax(node, depth, maximizing_player):
