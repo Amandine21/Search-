@@ -6,42 +6,46 @@ from fishing_game_core.player_utils import PlayerController
 from fishing_game_core.shared import ACTION_TO_STR
 
 
+MAX_DEPTH = 7
+TIME_LIMIT = 0.055      
 
-
-MAX_DEPTH = 3
 
 class PlayerControllerMinimax(PlayerController):
-
     def __init__(self):
         super(PlayerControllerMinimax, self).__init__()
 
     def player_loop(self):
-        """
-        Main loop for the alpha-beta next move search.
-        """
         first_msg = self.receiver()
 
         while True:
             msg = self.receiver()
             node = Node(message=msg, player=0)
 
-            # Use alpha-beta to select best move
-            best_move = self.search_best_next_move_alphabeta(
-                root=node,
-                evaluate=self.evaluate_node,
-                max_depth=MAX_DEPTH,
-                time_limit=0.55
-            )
-
+            best_move = self.search_best_next_move(node)
             self.sender({"action": best_move, "search_time": None})
 
-    # ----------------- EVALUATION FUNCTION -----------------
+    # -----------------------------------------------------------
+    # HASHING
+    def hash_key(self, state):
+
+        pos_dic = dict()
+        for pos, score in zip(state.get_fish_positions().items(),
+                              state.get_fish_scores().items()):
+            score = score[1]
+            pos = pos[1]
+            k = f"{pos[0]}{pos[1]}"
+            pos_dic[k] = score
+
+        return str(state.get_hook_positions()) + str(pos_dic)
+
+
+    # -----------------------------------------------------------
+    # HEURISTIC EVALUATION
     def evaluate_node(self, node):
         state = node.state
         fish_positions = state.get_fish_positions()
         hooks = state.get_hook_positions()
         fish_scores = state.get_fish_scores()
-        caught_fish = state.get_caught()
 
         def torus_manhattan(a, b, width=20):
             dx = abs(a[0] - b[0])
@@ -53,95 +57,121 @@ class PlayerControllerMinimax(PlayerController):
         min_score = 0
 
         for fish_id, pos in fish_positions.items():
-            fish_value = fish_scores[fish_id]
+            val = fish_scores[fish_id]
 
-            # Distance to hooks
             d_max = torus_manhattan(hooks[0], pos) + 1
             d_min = torus_manhattan(hooks[1], pos) + 1
 
-            # If hook is on the fish, it counts as caught
             if hooks[0] == pos:
-                max_score += fish_value  # full value
+                max_score += val
             else:
-                max_score += fish_value / d_max  # partial value if approaching
+                max_score += val / d_max
 
             if hooks[1] == pos:
-                min_score += fish_value
+                min_score += val
             else:
-                min_score += fish_value / d_min
+                min_score += val / d_min
 
         return max_score - min_score
 
 
-    # ----------------- ALPHA-BETA PRUNING -----------------
-    def alphabeta(self, node, depth, alpha, beta, maximizing_player, evaluate, start_time, time_limit):
-        if time.time() - start_time >= time_limit:
+    # -----------------------------------------------------------
+    # ALPHA-BETA PRUNING
+    def alphabeta(self, node, state, depth, alpha, beta, player,
+                  initial_time, seen_nodes):
+
+        # HARD TIME CUTOFF
+        if time.time() - initial_time > TIME_LIMIT:
             raise TimeoutError
 
-        children = node.compute_and_get_children()
-        if depth == 0 or not children:
-            return evaluate(node)
+        # TRANSPOSITION TABLE
+        k = self.hash_key(state)
+        if k in seen_nodes and seen_nodes[k][0] >= depth:
+            return seen_nodes[k][1]
 
-        if maximizing_player:
-            value = float("-inf")
+        children = node.compute_and_get_children()
+
+        # MOVE ORDERING
+        children.sort(key=self.evaluate_node, reverse=True)
+
+        # TERMINAL
+        if depth == 0 or not children:
+            value = self.evaluate_node(node)
+
+        # MAX PLAYER
+        elif player == 0:
+            value = float('-inf')
             for child in children:
-                score = self.alphabeta(
-                    child, depth-1, alpha, beta, False,
-                    evaluate, start_time, time_limit
+                child_val = self.alphabeta(
+                    child, child.state,
+                    depth - 1, alpha, beta,
+                    1, initial_time, seen_nodes
                 )
-                value = max(value, score)
-                alpha = max(alpha, value)
+                value = max(value, child_val)       # <-- FIXED
+                alpha = max(alpha, value)           # <-- FIXED
                 if alpha >= beta:
-                    break  # beta prune
-            return value
+                    break
+
+        # MIN PLAYER
         else:
-            value = float("inf")
+            value = float('inf')
             for child in children:
-                score = self.alphabeta(
-                    child, depth-1, alpha, beta, True,
-                    evaluate, start_time, time_limit
+                child_val = self.alphabeta(
+                    child, child.state,
+                    depth - 1, alpha, beta,
+                    0, initial_time, seen_nodes
                 )
-                value = min(value, score)
+                value = min(value, child_val)
                 beta = min(beta, value)
                 if beta <= alpha:
-                    break  # alpha prune
-            return value
+                    break
 
-    # ----------------- BEST MOVE SELECTION -----------------
-    def search_best_next_move_alphabeta(self, root, evaluate, max_depth=MAX_DEPTH, time_limit=0.55):
-        root_children = root.compute_and_get_children()
-        if not root_children:
-            return ACTION_TO_STR[0]
+        seen_nodes[k] = [depth, value]
+        return value
 
-        start_time = time.time()
-        best_value = float("-inf")
-        best_moves = []
 
-        try:
-            for child in root_children:
-                score = self.alphabeta(
-                    child,
-                    max_depth-1,
-                    alpha=float("-inf"),
-                    beta=float("inf"),
-                    maximizing_player=False,
-                    evaluate=evaluate,
-                    start_time=start_time,
-                    time_limit=time_limit
+    # -----------------------------------------------------------
+    # DEPTH SEARCH
+    def depth_search(self, node, depth, initial_time, seen_nodes):
+        alpha = float('-inf')
+        beta = float('inf')
+        children = node.compute_and_get_children()
+
+        scores = []
+        for child in children:
+            score = self.alphabeta(
+                child, child.state,
+                depth, alpha, beta,
+                1, initial_time, seen_nodes
+            )
+            scores.append(score)
+
+        best_index = scores.index(max(scores))
+        return children[best_index].move
+
+
+    # -----------------------------------------------------------
+    # MAIN SEARCH FUNCTION
+    def search_best_next_move(self, initial_tree_node):
+
+        initial_time = time.time()
+        depth = 0
+        timeout = False
+        seen_nodes = dict()
+        best_move = 0
+
+        while not timeout and depth <= MAX_DEPTH:
+            try:
+                move = self.depth_search(
+                    initial_tree_node, depth,
+                    initial_time, seen_nodes
                 )
+                best_move = move
+                depth += 1
 
-                if score > best_value:
-                    best_value = score
-                    best_moves = [child.move]
-                elif score == best_value:
-                    best_moves.append(child.move)
+            except TimeoutError:
+                timeout = True
 
-        except TimeoutError:
-            # Time ran out; just use the best moves found so far
-            pass
+        return ACTION_TO_STR[best_move]
 
-        # Ensure we always return a valid move
-        if not best_moves:
-            return ACTION_TO_STR[0]
 
-        return ACTION_TO_STR[random.choice(best_moves)]
