@@ -1,184 +1,6 @@
-'''
-import random
-import time
-
-from fishing_game_core.game_tree import Node
-from fishing_game_core.player_utils import PlayerController
-from fishing_game_core.shared import ACTION_TO_STR
-
-
-MAX_DEPTH = 12
-TIME_LIMIT = 0.055      
-
-
-class PlayerControllerMinimax(PlayerController):
-    def __init__(self):
-        super(PlayerControllerMinimax, self).__init__()
-
-    def player_loop(self):
-        first_msg = self.receiver()
-
-        while True:
-            msg = self.receiver()
-            node = Node(message=msg, player=0)
-
-            best_move = self.search_best_next_move(node)
-            self.sender({"action": best_move, "search_time": None})
-
-    # -----------------------------------------------------------
-    # HASHING
-    def hash_key(self, state):
-
-        pos_dic = dict()
-        for pos, score in zip(state.get_fish_positions().items(),
-                              state.get_fish_scores().items()):
-            score = score[1]
-            pos = pos[1]
-            k = f"{pos[0]}{pos[1]}"
-            pos_dic[k] = score
-
-        return str(state.get_hook_positions()) + str(pos_dic)
-
-
-    # -----------------------------------------------------------
-    # HEURISTIC EVALUATION
-    def evaluate_node(self, node):
-        state = node.state
-        fish_positions = state.get_fish_positions()
-        hooks = state.get_hook_positions()
-        fish_scores = state.get_fish_scores()
-
-        def torus_manhattan(a, b, width=20):
-            dx = abs(a[0] - b[0])
-            dx = min(dx, width - dx)
-            dy = abs(a[1] - b[1])
-            return dx + dy
-
-        max_score = 0
-        min_score = 0
-
-        for fish_id, pos in fish_positions.items():
-            val = fish_scores[fish_id]
-
-            d_max = torus_manhattan(hooks[0], pos) + 1
-            d_min = torus_manhattan(hooks[1], pos) + 1
-
-            if hooks[0] == pos:
-                max_score += val
-            else:
-                max_score += val / d_max
-
-            if hooks[1] == pos:
-                min_score += val
-            else:
-                min_score += val / d_min
-
-        return max_score - min_score
-
-
-    # -----------------------------------------------------------
-    # ALPHA-BETA PRUNING
-    def alphabeta(self, node, state, depth, alpha, beta, player,
-                  initial_time, seen_nodes):
-
-        # Create a time cutoff
-        if time.time() - initial_time > TIME_LIMIT:
-            raise TimeoutError
-
-        # Store the states in the transposition table
-        k = self.hash_key(state)
-        if k in seen_nodes and seen_nodes[k][0] >= depth:
-            return seen_nodes[k][1]
-
-        children = node.compute_and_get_children()
-
-        #Reorder the scores in descending order
-        children.sort(key=self.evaluate_node, reverse=True)
-
-        # Checks if the current node is a terminal node
-        if depth == 0 or not children:
-            value = self.evaluate_node(node)
-
-        # MAX PLAYER
-        elif player == 0:
-            value = float('-inf')
-            for child in children:
-                child_val = self.alphabeta(
-                    child, child.state,
-                    depth - 1, alpha, beta,
-                    1, initial_time, seen_nodes
-                )
-                value = max(value, child_val)     
-                alpha = max(alpha, value)           
-                if alpha >= beta:
-                    break
-
-        # MIN PLAYER
-        else:
-            value = float('inf')
-            for child in children:
-                child_val = self.alphabeta(
-                    child, child.state,
-                    depth - 1, alpha, beta,
-                    0, initial_time, seen_nodes
-                )
-                value = min(value, child_val)
-                beta = min(beta, value)
-                if beta <= alpha:
-                    break
-
-        seen_nodes[k] = [depth, value]
-        return value
-
-
-    # -----------------------------------------------------------
-    # DEPTH SEARCH
-    def depth_search(self, node, depth, initial_time, seen_nodes):
-        alpha = float('-inf')
-        beta = float('inf')
-        children = node.compute_and_get_children()
-
-        scores = []
-        for child in children:
-            score = self.alphabeta(
-                child, child.state,
-                depth, alpha, beta,
-                1, initial_time, seen_nodes
-            )
-            scores.append(score)
-
-        best_index = scores.index(max(scores))
-        return children[best_index].move
-
-
-    # -----------------------------------------------------------
-    # MAIN SEARCH FUNCTION
-    def search_best_next_move(self, initial_tree_node):
-
-        initial_time = time.time()
-        depth = 0
-        timeout = False
-        seen_nodes = dict()
-        best_move = 0
-
-        while not timeout and depth <= MAX_DEPTH:
-            try:
-                move = self.depth_search(
-                    initial_tree_node, depth,
-                    initial_time, seen_nodes
-                )
-                best_move = move
-                depth += 1
-
-            except TimeoutError:
-                timeout = True
-
-        return ACTION_TO_STR[best_move]
-        '''
-
-
 import time
 import random
+import traceback
 from collections import defaultdict
 
 from fishing_game_core.game_tree import Node
@@ -192,6 +14,8 @@ MAX_DEPTH = 15                # Hard cap on search depth
 KILLER_SLOTS = 2              # Killer moves per depth
 QUIESCENCE_DEPTH = 2          # Max quiescence depth
 
+DEBUG = True                  # Turn debug prints on/off
+
 
 class TimeUp(Exception):
     """Exception for timeout-safe search abort."""
@@ -202,7 +26,7 @@ class TTEntry:
     def __init__(self, value, depth, flag, best_move):
         self.value = value
         self.depth = depth     # depth of stored result
-        self.flag = flag        # EXACT, LOWER, UPPER
+        self.flag = flag       # EXACT, LOWER, UPPER
         self.best_move = best_move
 
 
@@ -210,8 +34,9 @@ class PlayerControllerMinimax(PlayerController):
 
     def __init__(self):
         super().__init__()
-        self.tt = {}                   # Transposition table
-        self.killers = defaultdict(lambda: [])
+        self.tt = {}                         # Transposition table
+        # IMPORTANT: use list (picklable), not a lambda
+        self.killers = defaultdict(list)
         self.pv_table = {}
 
     # ===================================================================
@@ -223,8 +48,10 @@ class PlayerControllerMinimax(PlayerController):
         while True:
             msg = self.receiver()
             root = Node(message=msg, player=0)
-            move = self.search_best_next_move(root)
-            self.sender({"action": move, "search_time": None})
+            move_str = self.search_best_next_move(root)
+            if DEBUG:
+                print(f"[DEBUG] Sending move: {move_str}")
+            self.sender({"action": move_str, "search_time": None})
 
     # ===================================================================
     #                HASH KEY
@@ -256,17 +83,9 @@ class PlayerControllerMinimax(PlayerController):
         return dx + dy
 
     # ===================================================================
-    #                HEURISTIC (TUNED FOR 20/25 KATTIS)
+    #                HEURISTIC
     # ===================================================================
     def evaluate_state(self, state):
-        """
-        Improved heuristic tuned for Kattis:
-        - Encourages immediate captures
-        - Prefers high-value fish even if slightly farther
-        - Penalizes letting opponent get closer to valuable fish
-        - Uses shallower distance exponent to prevent 'snap chasing'
-        """
-
         hooks = state.get_hook_positions()
         fish_pos = state.get_fish_positions()
         fish_scores = state.get_fish_scores()
@@ -301,11 +120,9 @@ class PlayerControllerMinimax(PlayerController):
             opp_att = fish_val / (d_r ** EXP)
 
             # ---- Relative positional advantage ----
-            # reward being closer than opponent to valuable fish
             dist_adv = (d_r - d_g) * 0.35 * fish_val
 
             # ---- Vertical alignment heuristic ----
-            # fishes line up under hooks frequently in Kattis maps
             vertical_bonus = 0
             if abs(g_hook[0] - pos[0]) <= 1:
                 vertical_bonus += fish_val * 0.25
@@ -315,7 +132,6 @@ class PlayerControllerMinimax(PlayerController):
             value += my_att - opp_att + dist_adv + vertical_bonus
 
         return value
-
 
     # ===================================================================
     #               QUIESCENCE SEARCH
@@ -350,7 +166,10 @@ class PlayerControllerMinimax(PlayerController):
             return stand
 
         # Order by static eval
-        capture_children.sort(key=lambda c: self.evaluate_state(c.state), reverse=True)
+        capture_children.sort(
+            key=lambda c: self.evaluate_state(c.state),
+            reverse=True
+        )
 
         for ch in capture_children:
             val = -self.quiescence(ch, -beta, -alpha, start_t, depth - 1)
@@ -375,13 +194,10 @@ class PlayerControllerMinimax(PlayerController):
         if key in self.tt:
             entry = self.tt[key]
             if entry.depth >= depth:
-                # EXACT value
                 if entry.flag == 'EXACT':
                     return entry.value
-                # Lower bound
                 if entry.flag == 'LOWER':
                     alpha = max(alpha, entry.value)
-                # Upper bound
                 if entry.flag == 'UPPER':
                     beta = min(beta, entry.value)
                 if alpha >= beta:
@@ -399,14 +215,11 @@ class PlayerControllerMinimax(PlayerController):
 
         for ch in children:
             score = 0.0
-
             if ch.move == pv_move:
                 score += 1e6
             if ch.move in killers:
                 score += 5e5
-
             score += self.evaluate_state(ch.state)
-
             moves_ordered.append((score, ch))
 
         moves_ordered.sort(key=lambda t: t[0], reverse=True)
@@ -425,7 +238,6 @@ class PlayerControllerMinimax(PlayerController):
                     best_move = ch.move
                 a = max(a, best_value)
                 if a >= beta:
-                    # killer moves
                     if best_move is not None:
                         lst = self.killers[depth]
                         if best_move not in lst:
@@ -434,7 +246,6 @@ class PlayerControllerMinimax(PlayerController):
                                 lst.pop()
                     flag = 'LOWER'
                     break
-
             alpha = max(alpha, best_value)
 
         # ==== MIN PLAYER ====
@@ -455,7 +266,6 @@ class PlayerControllerMinimax(PlayerController):
                                 lst.pop()
                     flag = 'UPPER'
                     break
-
             beta = min(beta, best_value)
 
         # ==== TT STORE ====
@@ -477,6 +287,8 @@ class PlayerControllerMinimax(PlayerController):
 
         children = root.compute_and_get_children()
         if not children:
+            if DEBUG:
+                print("[DEBUG] No children → STAY (4)")
             return 4  # fallback STAY
 
         ordered = []
@@ -498,6 +310,10 @@ class PlayerControllerMinimax(PlayerController):
             if alpha >= beta:
                 break
 
+        if DEBUG:
+            print(f"[DEBUG] depth_search depth={depth}, "
+                  f"best_move={best_move} ({ACTION_TO_STR[best_move]}), "
+                  f"value={best_value}")
         return best_move
 
     # ===================================================================
@@ -507,6 +323,8 @@ class PlayerControllerMinimax(PlayerController):
         start_t = time.perf_counter()
 
         best_move = 4  # fallback STAY
+        last_completed_depth = 0
+
         self.killers.clear()
         self.pv_table.clear()
 
@@ -514,11 +332,27 @@ class PlayerControllerMinimax(PlayerController):
             try:
                 move = self.depth_search(root, depth, start_t)
                 best_move = move
+                last_completed_depth = depth
+
                 if time.perf_counter() - start_t > TIME_LIMIT:
+                    if DEBUG:
+                        print(f"[DEBUG] Time limit reached after depth {depth}")
                     break
+
             except TimeUp:
+                if DEBUG:
+                    print(f"[DEBUG] TimeUp at depth {depth}")
                 break
-            except Exception:
+
+            except Exception as e:
+                # Do NOT silently swallow the error – print full traceback
+                print(f"[ERROR] Exception during search at depth {depth}: {e}")
+                traceback.print_exc()
                 break
+
+        if DEBUG:
+            print(f"[DEBUG] IDS finished: depth={last_completed_depth}, "
+                  f"best_move={best_move} ({ACTION_TO_STR[best_move]}), "
+                  f"elapsed={time.perf_counter() - start_t:.4f}s")
 
         return ACTION_TO_STR[best_move]
