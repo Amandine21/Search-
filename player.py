@@ -6,7 +6,7 @@ from fishing_game_core.player_utils import PlayerController
 from fishing_game_core.shared import ACTION_TO_STR
 
 
-MAX_DEPTH = 7
+MAX_DEPTH = 12
 TIME_LIMIT = 0.055      
 
 
@@ -80,21 +80,21 @@ class PlayerControllerMinimax(PlayerController):
     def alphabeta(self, node, state, depth, alpha, beta, player,
                   initial_time, seen_nodes):
 
-        # HARD TIME CUTOFF
+        # Create a time cutoff
         if time.time() - initial_time > TIME_LIMIT:
             raise TimeoutError
 
-        # TRANSPOSITION TABLE
+        # Store the states in the transposition table
         k = self.hash_key(state)
         if k in seen_nodes and seen_nodes[k][0] >= depth:
             return seen_nodes[k][1]
 
         children = node.compute_and_get_children()
 
-        # MOVE ORDERING
+        #Reorder the scores in descending order
         children.sort(key=self.evaluate_node, reverse=True)
 
-        # TERMINAL
+        # Checks if the current node is a terminal node
         if depth == 0 or not children:
             value = self.evaluate_node(node)
 
@@ -107,8 +107,8 @@ class PlayerControllerMinimax(PlayerController):
                     depth - 1, alpha, beta,
                     1, initial_time, seen_nodes
                 )
-                value = max(value, child_val)       # <-- FIXED
-                alpha = max(alpha, value)           # <-- FIXED
+                value = max(value, child_val)     
+                alpha = max(alpha, value)           
                 if alpha >= beta:
                     break
 
@@ -173,5 +173,7 @@ class PlayerControllerMinimax(PlayerController):
                 timeout = True
 
         return ACTION_TO_STR[best_move]
+
+
 
 
